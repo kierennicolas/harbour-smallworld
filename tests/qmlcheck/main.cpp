@@ -22,6 +22,7 @@
 #include <QUrl>
 #include <cstdio>
 #include <cstdlib>
+#include <unistd.h>
 
 static QString g_appUrl;
 static QString g_appPath;
@@ -74,7 +75,6 @@ int main(int argc, char **argv)
         fprintf(stderr, "compiled %d file(s)\n", files);
 
         const char *creatable[] = { "pages/AboutPage.qml", "pages/MenuPage.qml", "cover/CoverPage.qml" };
-        QList<QObject *> keep;
         for (const char *f : creatable) {
             QQmlComponent c(engine, QUrl::fromLocalFile(root.filePath(QString::fromLatin1(f))));
             QObject *o = c.create(view.rootContext());
@@ -84,12 +84,13 @@ int main(int argc, char **argv)
                 ++g_problems;
             } else {
                 fprintf(stderr, "CREATED   %s (%s)\n", f, o->metaObject()->className());
-                keep << o;
             }
         }
-        QTimer::singleShot(1000, &app, &QCoreApplication::quit);
-        app.exec();
-        qDeleteAll(keep);
+        // Bindings were evaluated during creation. Leave now: loading the
+        // WebView module starts Gecko threads, which crash under qemu.
+        fprintf(stderr, "qmlcheck: %d problem(s) in app QML\n", g_problems);
+        fflush(stderr);
+        _exit(g_problems ? 1 : 0);
     } else {
         view.setSource(QUrl::fromLocalFile(root.filePath(QStringLiteral("harbour-smallworld.qml"))));
         if (view.status() != QQuickView::Ready || !view.rootObject()) {

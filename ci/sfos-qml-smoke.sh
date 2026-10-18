@@ -34,17 +34,23 @@ echo "::endgroup::"
 problems=0
 
 echo "::group::Theme icons used by the app"
-themedirs=$($SB2 /bin/sh -c 'ls -d /usr/share/themes/*/meegotouch/z1.0/icons /usr/share/themes/*/silica/z1.0/icons 2>/dev/null')
-icons=$(grep -rhoE 'image://theme/[A-Za-z0-9_-]+' "/workspace/qml" | sed 's#image://theme/##' | sort -u)
-if [ -z "$themedirs" ]; then
-  echo "No theme icon folders in this SDK target; skipping the icon check."
+# The SDK target ships without theme graphics; install one density so the
+# app's image://theme/ names can be checked against the real icon set.
+find_icon() { $SB2 /bin/sh -c "find /usr/share/themes -name '$1.png' -o -name '$1.svg' 2>/dev/null" | head -1; }
+if [ -z "$(find_icon icon-m-back)" ]; then
+  all=$($SB2 -m sdk-install -R zypper --non-interactive search 'sailfish-content-graphics*' 2>/dev/null \
+         | awk -F'|' 'NR>2 {gsub(/ /,"",$2); print $2}' | sort -u)
+  echo "Theme graphics packages in the repositories: $(echo $all)"
+  pkgs=$(echo "$all" | grep -E '^sailfish-content-graphics-default-z1\.0(-base)?$')
+  echo "Installing theme graphics: ${pkgs:-none found}"
+  [ -n "$pkgs" ] && $SB2 -m sdk-install -R zypper --non-interactive install $pkgs >/dev/null 2>&1
+fi
+if [ -z "$(find_icon icon-m-back)" ]; then
+  echo "No theme icons available in this SDK target; skipping the icon check."
 else
-  for icon in $icons; do
-    found=""
-    for d in $themedirs; do
-      $SB2 /bin/sh -c "ls $d/$icon.png $d/$icon.svg 2>/dev/null" | grep -q . && found="$d" && break
-    done
-    if [ -n "$found" ]; then echo "OK      $icon"; else echo "MISSING $icon"; problems=$((problems + 1)); fi
+  for icon in $(grep -rhoE 'image://theme/[A-Za-z0-9_-]+' /workspace/qml | sed 's#image://theme/##' | sort -u); do
+    f=$(find_icon "$icon")
+    if [ -n "$f" ]; then echo "OK      $icon  ($f)"; else echo "MISSING $icon"; problems=$((problems + 1)); fi
   done
 fi
 echo "::endgroup::"
