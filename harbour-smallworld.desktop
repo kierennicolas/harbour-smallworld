@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+X-Nemo-Application-Type=silica-qt5
+Name=Small World
+Comment=Unofficial app for the ASMALLWORLD website
+Icon=harbour-smallworld
+Exec=sailfish-qml harbour-smallworld
+Categories=Network;
+
+[X-Sailjail]
+OrganizationName=io.github.kierennicolas
+ApplicationName=smallworld
+Permissions=Internet;WebView;Audio;MediaIndexing;UserDirs;RemovableMedia

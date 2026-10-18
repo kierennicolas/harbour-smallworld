@@ -1,0 +1,123 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release:
+        description: 'Sailfish OS SDK target to build and test against (e.g. 4.5.0.16, 5.0.0.43, 5.1.0.11)'
+        default: '4.5.0.16'
+
+permissions:
+  contents: read
+
+env:
+  # The RPM is noarch QML, so it installs on every device; this only picks
+  # which Sailfish OS release the QML is checked against.
+  SFOS_RELEASE: ${{ inputs.release || '4.5.0.16' }}
+  SDK_IMAGE: coderus/sailfishos-platform-sdk-armv7hl
+
+jobs:
+  checks:
+    name: Link rules and QML lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Link rule tests
+        run: |
+          set -o pipefail
+          rc=0
+          node tests/links.test.js 2>&1 | tee links.log || rc=$?
+          ci/annotate.sh "$([ $rc = 0 ] && echo notice || echo error)" "Link rule tests" links.log 60
+          exit $rc
+      - name: Lint QML and the desktop file
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q qtdeclarative5-dev-tools desktop-file-utils
+          find qml -name '*.qml' -print0 | xargs -0 -n1 /usr/lib/qt5/bin/qmllint
+          desktop-file-validate harbour-smallworld.desktop
+
+  rpm:
+    name: RPM (noarch) on Sailfish OS ${{ inputs.release || '4.5.0.16' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - name: Free disk space for the SDK image
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+      - name: Pull Sailfish SDK ${{ env.SFOS_RELEASE }}
+        run: docker pull "$SDK_IMAGE:$SFOS_RELEASE"
+      - name: Build RPM
+        id: build
+        run: |
+          set -o pipefail
+          mkdir -p RPMS && chmod a+rwx RPMS
+          if ! docker run --rm --privileged \
+              -e SFOS_RELEASE -e SFOS_ARCH=armv7hl \
+              -v "$GITHUB_WORKSPACE:/workspace" \
+              "$SDK_IMAGE:$SFOS_RELEASE" /bin/bash /workspace/ci/sfos-build.sh 2>&1 | tee build.log; then
+            ci/annotate.sh error "RPM build log" build.log 120
+            exit 1
+          fi
+          ls -l RPMS
+      - uses: actions/upload-artifact@v6
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        with:
+          name: harbour-smallworld-noarch
+          path: RPMS/harbour-smallworld-[0-9]*.noarch.rpm
+          if-no-files-found: error
+      - name: Harbour RPM validator
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          rc=0
+          docker run --rm --privileged \
+            -e SFOS_RELEASE -e SFOS_ARCH=armv7hl \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            "$SDK_IMAGE:$SFOS_RELEASE" /bin/bash /workspace/ci/sfos-validate.sh 2>&1 | tee validate.log || rc=$?
+          ci/annotate.sh "$([ $rc = 0 ] && echo notice || echo error)" "Harbour validator" validate.log 200
+          exit $rc
+      - name: Install on Sailfish OS and load the QML with real Silica and WebView
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          set -o pipefail
+          rc=0
+          docker run --rm --privileged \
+            -e SFOS_RELEASE -e SFOS_ARCH=armv7hl \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            "$SDK_IMAGE:$SFOS_RELEASE" /bin/bash /workspace/ci/sfos-qml-smoke.sh 2>&1 | tee qml.log || rc=$?
+          ci/annotate.sh "$([ $rc = 0 ] && echo notice || echo error)" "QML smoke test" qml.log 240
+          exit $rc
+
+  release:
+    name: GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [checks, rpm]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          ls -l dist
+          cat > notes.md <<EOF
+          One RPM for every Sailfish OS device (noarch), including the Sony Xperia XA2.
+          Unofficial; not made or endorsed by ASMALLWORLD AG. See the README for install steps.
+          EOF
+          # Works both for a pushed tag and for a release drafted in the GitHub UI.
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/*.rpm --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" dist/*.rpm --repo "$GITHUB_REPOSITORY" --title "Small World ${TAG#v}" --notes-file notes.md
+          fi

@@ -1,0 +1,5 @@
+RPMS/
+Makefile
+.qmake.stash
+*.pro.user*
+/tests/qmlcheck/build/
